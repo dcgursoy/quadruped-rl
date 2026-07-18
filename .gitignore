@@ -1,0 +1,16 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+
+# TensorBoard event logs (regenerable; curves exported to results/ as PNG)
+runs/
+
+# Intermediate training checkpoints are kept locally; only the checkpoints
+# needed for the demo (early/mid/final) are committed under results/
+checkpoints/
+
+# OS
+Thumbs.db
+desktop.ini
