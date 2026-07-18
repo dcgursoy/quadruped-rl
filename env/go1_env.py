@@ -33,19 +33,35 @@ import numpy as np
 SCENE_XML = Path(__file__).parent / "assets" / "unitree_go1" / "scene.xml"
 
 PHYSICS_STEPS_PER_CTRL = 10  # 0.002 s * 10 = 50 Hz control
+CTRL_DT = 0.02               # s per control step
 EPISODE_LENGTH = 1000        # 20 s
 ACTION_SCALE = 0.3           # rad, offset range around home pose
-MIN_HEIGHT = 0.15            # m, trunk height below this = fallen
+TARGET_HEIGHT = 0.27         # m, nominal standing trunk height
+MIN_HEIGHT = 0.18            # m, trunk height below this = fallen
 MAX_TILT_GZ = -0.6           # body-frame gravity z above this = tipped over
+AIR_TIME_TARGET = 0.2        # s, swing shorter than this is penalized
 
-# Baseline reward (Phase 2). Weights are per-control-step.
+# Reward v2 (Phase 3). Weights are per-control-step.
+# v1 (Phase 2 baseline: forward_velocity, alive, orientation, torque,
+# action_rate only) produced a stable low crawl -- see
+# docs/reward_shaping.md for the full iteration log and reasoning.
 REWARD_WEIGHTS = {
     "forward_velocity": 2.0,   # * clip(world v_x, -1.0, +1.0) m/s
     "alive": 0.5,              # constant while not fallen
-    "orientation": -0.5,       # * (g_x^2 + g_y^2), penalize tilt
+    "height": -30.0,           # * (trunk z - TARGET_HEIGHT)^2, anti-crawl
+    "orientation": -2.0,       # * (g_x^2 + g_y^2), penalize tilt
+    "lateral_velocity": -1.0,  # * v_y^2 (body frame), walk straight
+    "yaw_rate": -0.5,          # * w_z^2 (body frame), walk straight
+    "abduction_posture": -0.3, # * sum(abduction q^2), anti-leg-splay
+    "air_time": 2.0,           # * sum_feet (t_air - AIR_TIME_TARGET) at
+                               #   touchdown: rewards real swings, punishes
+                               #   foot-dragging / vibrating contacts
     "torque": -1e-4,           # * sum(actuator torque^2), energy proxy
     "action_rate": -0.01,      # * ||a_t - a_{t-1}||^2, smoothness
 }
+
+FOOT_GEOM_NAMES = ("FR", "FL", "RR", "RL")
+ABDUCTION_QPOS_IDX = np.array([7, 10, 13, 16])  # hip abduction joints in qpos
 
 
 class Go1WalkEnv(gym.Env):
@@ -64,6 +80,16 @@ class Go1WalkEnv(gym.Env):
         self._trunk_id = mujoco.mj_name2id(
             self.model, mujoco.mjtObj.mjOBJ_BODY, "trunk"
         )
+        self._floor_geom = mujoco.mj_name2id(
+            self.model, mujoco.mjtObj.mjOBJ_GEOM, "floor"
+        )
+        self._foot_geoms = np.array(
+            [
+                mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, n)
+                for n in FOOT_GEOM_NAMES
+            ]
+        )
+        self._foot_air = np.zeros(4)
 
         self.action_space = gym.spaces.Box(-1.0, 1.0, shape=(12,), dtype=np.float32)
         self.observation_space = gym.spaces.Box(
@@ -105,6 +131,32 @@ class Go1WalkEnv(gym.Env):
         gravity, _, _ = self._body_frame()
         return self.data.qpos[2] < MIN_HEIGHT or gravity[2] > MAX_TILT_GZ
 
+    def _foot_contacts(self) -> np.ndarray:
+        """Bool[4]: is each foot geom in contact with the floor."""
+        contacts = np.zeros(4, dtype=bool)
+        for i in range(self.data.ncon):
+            c = self.data.contact[i]
+            pair = (c.geom1, c.geom2)
+            if self._floor_geom in pair:
+                other = pair[1] if pair[0] == self._floor_geom else pair[0]
+                hit = np.flatnonzero(self._foot_geoms == other)
+                if hit.size:
+                    contacts[hit[0]] = True
+        return contacts
+
+    def _air_time_reward(self) -> float:
+        """Accumulate swing time; score each swing when the foot touches down."""
+        contacts = self._foot_contacts()
+        total = 0.0
+        for i in range(4):
+            if contacts[i]:
+                if self._foot_air[i] > 0.0:  # touchdown ends a swing
+                    total += self._foot_air[i] - AIR_TIME_TARGET
+                self._foot_air[i] = 0.0
+            else:
+                self._foot_air[i] += CTRL_DT
+        return total
+
     # ------------------------------------------------------------- gym API
 
     def reset(self, *, seed: int | None = None, options: dict | None = None):
@@ -121,6 +173,7 @@ class Go1WalkEnv(gym.Env):
         self._step_count = 0
         self._push_force = np.zeros(3)
         self._push_steps_left = 0
+        self._foot_air = np.zeros(4)
         return self._get_obs(), {}
 
     def step(self, action: np.ndarray):
@@ -140,15 +193,23 @@ class Go1WalkEnv(gym.Env):
         self._step_count += 1
         fallen = self._is_fallen()
 
-        gravity, _, _ = self._body_frame()
+        gravity, lin_vel, ang_vel = self._body_frame()
         vx_world = self.data.qvel[0]
         torques = self.data.actuator_force
         components = {
             "forward_velocity": REWARD_WEIGHTS["forward_velocity"]
             * float(np.clip(vx_world, -1.0, 1.0)),
             "alive": REWARD_WEIGHTS["alive"] * (0.0 if fallen else 1.0),
+            "height": REWARD_WEIGHTS["height"]
+            * float((self.data.qpos[2] - TARGET_HEIGHT) ** 2),
             "orientation": REWARD_WEIGHTS["orientation"]
             * float(gravity[0] ** 2 + gravity[1] ** 2),
+            "lateral_velocity": REWARD_WEIGHTS["lateral_velocity"]
+            * float(lin_vel[1] ** 2),
+            "yaw_rate": REWARD_WEIGHTS["yaw_rate"] * float(ang_vel[2] ** 2),
+            "abduction_posture": REWARD_WEIGHTS["abduction_posture"]
+            * float(np.sum(self.data.qpos[ABDUCTION_QPOS_IDX] ** 2)),
+            "air_time": REWARD_WEIGHTS["air_time"] * self._air_time_reward(),
             "torque": REWARD_WEIGHTS["torque"] * float(np.sum(torques**2)),
             "action_rate": REWARD_WEIGHTS["action_rate"]
             * float(np.sum((action - self._prev_action) ** 2)),
