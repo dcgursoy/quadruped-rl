@@ -58,3 +58,24 @@ job was to make dragging unprofitable during learning, and the stride strip
 
 **Decision:** freeze this reward for the full 10M-step run (fresh seed, same
 env), keeping every 500k-step checkpoint for the training-progression demo.
+
+## Full run (10M steps, ~4.3 h wall-clock on 8 CPU cores)
+
+ep_rew_mean climbed −30 → ~2,250 (curve data:
+`results/phase3/training_curve.csv`); episode length hit the 1,000-step cap
+by ~5M steps (the policy stops falling). Training dipped after ~8.5M
+(late-run PPO noise), which showed up in head-to-head checkpoint evaluation
+(`evaluation/select_checkpoint.py`, 10 deterministic episodes each):
+
+| checkpoint | reward | ep len | speed | falls |
+|---|---|---|---|---|
+| 8.0M | 2265.7 ± 4 | 1000 | 1.35 m/s | 0/10 |
+| **8.5M** | **2272.1 ± 2** | **1000** | **1.36 m/s** | **0/10** |
+| 9.0M | 2025.5 ± 678 | 902 | 1.32 m/s | 1/10 |
+| 9.5M | 2036.4 ± 679 | 909 | 1.31 m/s | 1/10 |
+| 10.0M | 1968.8 ± 673 | 904 | 1.27 m/s | 1/10 |
+
+**Selected policy: the 8.5M-step checkpoint** (committed as
+`results/checkpoints/best_8500k.zip` with its normalization stats). Lesson:
+"latest" ≠ "best" — evaluate before you ship. The early (500k) and mid (2M)
+checkpoints are also committed for the training-progression demo.
