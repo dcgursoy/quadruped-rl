@@ -79,3 +79,24 @@ by ~5M steps (the policy stops falling). Training dipped after ~8.5M
 `results/checkpoints/best_8500k.zip` with its normalization stats). Lesson:
 "latest" ≠ "best" — evaluate before you ship. The early (500k) and mid (2M)
 checkpoints are also committed for the training-progression demo.
+
+## v3 — robustness hardening (Phase 4 findings)
+
+Phase 4 evaluation of the v2 policy found two failure modes: **left-right
+asymmetry** (right pushes topple it at 50 N while left pushes are survivable
+to 100+ N) and **sensor-noise brittleness** (9/20 falls at realistic
+IMU/encoder noise; 20/20 at 2×). Three changes, each targeting one cause:
+
+| change | targets |
+|---|---|
+| training-time observation noise (same sigmas as the eval) | noise brittleness — the policy can no longer overfit clean simulator state |
+| random 20–80 N pushes every 3–6 s during training | recovery skills in *all* directions, not just those the gait happens to resist |
+| `contact_balance`: −5 · Σ mirrored-pair (contact-duty EMA difference)² | one-sided loading. Deliberately *not* an instantaneous mirror penalty — that would forbid the trot's half-phase offset; duty balance is phase-agnostic |
+
+**2M-step validation gate:** hardening works even before full training —
+right-push recovery 50 N: 3/10 → 10/10, 75 N: 1/10 → 10/10; noise ×1:
+9/20 falls → 0/10, walking 1.33 m/s under noise. Clean-run speed (0.79 m/s
+at 2M) trails v2's schedule slightly — expected, the task is strictly
+harder. Full 10M run launched.
+
+**Full-run result:** _pending._
