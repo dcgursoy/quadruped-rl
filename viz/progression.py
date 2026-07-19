@@ -38,6 +38,10 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=3)
     parser.add_argument("--scale", type=float, default=0.5,
                         help="output resolution scale per panel")
+    parser.add_argument("--stochastic-stages", nargs="*", default=[],
+                        help="checkpoint stems rolled out with sampled (not "
+                             "mean) actions -- shows exploration behavior "
+                             "for untrained/early checkpoints")
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
 
@@ -50,7 +54,8 @@ def main() -> None:
     panels = []
     for stem, label in stages:
         policy = Policy(run_dir / f"{stem}.zip",
-                        run_dir / f"{stem}_vecnormalize.pkl")
+                        run_dir / f"{stem}_vecnormalize.pkl",
+                        stochastic=stem in args.stochastic_stages)
         env = Go1WalkEnv(render_mode="rgb_array")
         obs, _ = env.reset(seed=args.seed)
         panels.append({"policy": policy, "env": env, "obs": obs,

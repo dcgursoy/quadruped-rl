@@ -19,10 +19,22 @@ from stable_baselines3 import PPO
 
 
 class Policy:
-    """Trained policy + observation normalization, callable on raw obs."""
+    """Trained policy + observation normalization, callable on raw obs.
 
-    def __init__(self, checkpoint: str | Path, vecnormalize: str | Path):
+    stochastic=True samples from the action distribution instead of taking
+    its mean -- use for untrained/early checkpoints, where the deterministic
+    mean is ~0 (= "hold the home pose") and the *sampled* exploration noise
+    is what training rollouts actually looked like.
+    """
+
+    def __init__(
+        self,
+        checkpoint: str | Path,
+        vecnormalize: str | Path,
+        stochastic: bool = False,
+    ):
         self.model = PPO.load(str(checkpoint), device="cpu")
+        self.stochastic = stochastic
         with open(vecnormalize, "rb") as f:
             vn = pickle.load(f)
         self._mean = vn.obs_rms.mean
@@ -33,7 +45,7 @@ class Policy:
     def __call__(self, obs: np.ndarray) -> np.ndarray:
         norm = (obs - self._mean) / np.sqrt(self._var + self._eps)
         norm = np.clip(norm, -self._clip, self._clip)
-        action, _ = self.model.predict(norm, deterministic=True)
+        action, _ = self.model.predict(norm, deterministic=not self.stochastic)
         return action
 
 
