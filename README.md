@@ -13,17 +13,6 @@ laptop CPU in a few hours per run.
 exploration noise (left), 1M steps (center), the selected 10M-step policy
 (right).*
 
-> **Resume bullet (measured, reproducible):** Trained a PPO locomotion
-> policy for a simulated Unitree Go1 quadruped (MuJoCo, Stable-Baselines3)
-> from scratch through three documented reward-shaping iterations — fixing
-> reward-hacked crawling, left-right gait asymmetry, and sensor-noise
-> brittleness via posture/air-time shaping terms and domain randomization —
-> reaching **1.9 m/s stable walking, 100% push-recovery success for 0.2 s
-> pushes up to 75 N in all directions (39/40 at 100 N), and 0 falls in 20
-> episodes under 2× realistic IMU/encoder noise**; selected the deployed
-> policy by head-to-head checkpoint evaluation after catching late-training
-> regressions.
-
 ## Push recovery
 
 ![push recovery](results/phase5/push_recovery.gif)
