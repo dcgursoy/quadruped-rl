@@ -9,7 +9,9 @@ runs/
 
 # Intermediate training checkpoints are kept locally; only the checkpoints
 # needed for the demo (early/mid/final) are committed under results/
-checkpoints/
+# (anchored to repo root -- a bare "checkpoints/" would also ignore
+# results/checkpoints/, silently keeping the demo checkpoints out of git)
+/checkpoints/
 
 # OS
 Thumbs.db

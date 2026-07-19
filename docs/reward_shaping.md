@@ -99,4 +99,24 @@ right-push recovery 50 N: 3/10 → 10/10, 75 N: 1/10 → 10/10; noise ×1:
 at 2M) trails v2's schedule slightly — expected, the task is strictly
 harder. Full 10M run launched.
 
-**Full-run result:** _pending._
+**Full-run result (11M steps; the resume after a crash added the requested
+10M on top of the 1M restart checkpoint):** all late checkpoints walk
+fall-free; head-to-head eval picked **10M** (reward 2168 ± 8, **1.90 m/s**,
+0/10 falls) over the 11M final (2118, 1.49 m/s) — the same "latest ≠ best"
+pattern as v2. Committed as `results/checkpoints/best_10M.zip`.
+
+Robustness, v2 → v3 (same protocol, `results/phase4/robustness_results.md`):
+
+| test | v2 | v3 |
+|---|---|---|
+| clean speed | 1.36 m/s | **1.90 m/s** |
+| noise ×1 | 9/20 falls | **0/20** |
+| noise ×2 | 20/20 falls | **0/20** (1.80 m/s) |
+| push recovery ≤ 75 N, all directions | 33/40 | **40/40** |
+| push recovery at 100 N, all directions | 25/40 | **39/40** |
+| push at 125 N, all directions | 19/40 | **34/40** |
+| right push 100 N (the v2 hole) | 0/10 | **9/10** |
+
+The three v3 changes did exactly what they were designed to do, and the
+policy got *faster*, not slower — recovery training appears to have taught
+more dynamic, committed gaits rather than cautious ones.
