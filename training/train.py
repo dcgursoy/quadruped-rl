@@ -33,6 +33,11 @@ def main() -> None:
                         help="total env steps between checkpoints")
     parser.add_argument("--resume", type=str, default=None,
                         help="path to a .zip checkpoint to continue training from")
+    parser.add_argument("--resume-vecnormalize", type=str, default=None,
+                        help="VecNormalize .pkl saved alongside the resume "
+                             "checkpoint (required with --resume: resuming "
+                             "with fresh normalization stats would feed the "
+                             "policy observations on the wrong scale)")
     parser.add_argument("--obs-noise", type=float, default=0.0,
                         help="observation noise scale (1.0 = realistic sensors)")
     parser.add_argument("--random-pushes", action="store_true",
@@ -41,6 +46,9 @@ def main() -> None:
 
     ckpt_dir = REPO_ROOT / "checkpoints" / args.run_name
     ckpt_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.resume and not args.resume_vecnormalize:
+        sys.exit("--resume requires --resume-vecnormalize (see its help text)")
 
     vec_env = make_vec_env(
         Go1WalkEnv,
@@ -52,7 +60,11 @@ def main() -> None:
             random_pushes=args.random_pushes,
         ),
     )
-    vec_env = VecNormalize(vec_env, norm_obs=True, norm_reward=True, clip_obs=10.0)
+    if args.resume:
+        vec_env = VecNormalize.load(args.resume_vecnormalize, vec_env)
+        vec_env.training = True
+    else:
+        vec_env = VecNormalize(vec_env, norm_obs=True, norm_reward=True, clip_obs=10.0)
 
     if args.resume:
         model = PPO.load(args.resume, env=vec_env, tensorboard_log=str(REPO_ROOT / "runs"))
