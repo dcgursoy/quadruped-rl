@@ -33,6 +33,10 @@ def main() -> None:
                         help="total env steps between checkpoints")
     parser.add_argument("--resume", type=str, default=None,
                         help="path to a .zip checkpoint to continue training from")
+    parser.add_argument("--obs-noise", type=float, default=0.0,
+                        help="observation noise scale (1.0 = realistic sensors)")
+    parser.add_argument("--random-pushes", action="store_true",
+                        help="apply random 20-80 N pushes every 3-6 s during training")
     args = parser.parse_args()
 
     ckpt_dir = REPO_ROOT / "checkpoints" / args.run_name
@@ -43,6 +47,10 @@ def main() -> None:
         n_envs=args.n_envs,
         seed=args.seed,
         vec_env_cls=SubprocVecEnv,
+        env_kwargs=dict(
+            obs_noise_scale=args.obs_noise,
+            random_pushes=args.random_pushes,
+        ),
     )
     vec_env = VecNormalize(vec_env, norm_obs=True, norm_reward=True, clip_obs=10.0)
 
@@ -65,6 +73,11 @@ def main() -> None:
             verbose=1,
             tensorboard_log=str(REPO_ROOT / "runs"),
         )
+
+    if not args.resume:
+        # untrained snapshot: panel 1 of the training-progression demo
+        model.save(ckpt_dir / "init")
+        vec_env.save(str(ckpt_dir / "init_vecnormalize.pkl"))
 
     checkpoint_cb = CheckpointCallback(
         save_freq=max(1, args.checkpoint_every // args.n_envs),

@@ -41,10 +41,23 @@ MIN_HEIGHT = 0.18            # m, trunk height below this = fallen
 MAX_TILT_GZ = -0.6           # body-frame gravity z above this = tipped over
 AIR_TIME_TARGET = 0.2        # s, swing shorter than this is penalized
 
-# Reward v2 (Phase 3). Weights are per-control-step.
-# v1 (Phase 2 baseline: forward_velocity, alive, orientation, torque,
-# action_rate only) produced a stable low crawl -- see
-# docs/reward_shaping.md for the full iteration log and reasoning.
+# Per-component observation noise sigmas (projected gravity, lin vel,
+# ang vel, joint pos, joint vel, prev action) -- roughly realistic IMU /
+# joint-encoder noise. Scaled by obs_noise_scale (0 = clean).
+OBS_NOISE_SIGMA = np.concatenate([
+    np.full(3, 0.02), np.full(3, 0.05), np.full(3, 0.10),
+    np.full(12, 0.005), np.full(12, 0.75), np.full(12, 0.0),
+])
+
+# Random training pushes (domain randomization for recovery skills)
+PUSH_INTERVAL_STEPS = (150, 300)   # every 3-6 s
+PUSH_FORCE_RANGE_N = (20.0, 80.0)  # random direction, 0.2 s
+DUTY_EMA_ALPHA = 0.02              # ~1 s time constant at 50 Hz
+
+# Reward v3 (Phase 4 hardening). Weights are per-control-step.
+# v1 (Phase 2 baseline) produced a stable low crawl; v2 fixed posture but
+# learned a left-right asymmetric trot that was brittle to rightward pushes
+# and sensor noise -- see docs/reward_shaping.md for the iteration log.
 REWARD_WEIGHTS = {
     "forward_velocity": 2.0,   # * clip(world v_x, -1.0, +1.0) m/s
     "alive": 0.5,              # constant while not fallen
@@ -58,6 +71,11 @@ REWARD_WEIGHTS = {
                                #   foot-dragging / vibrating contacts
     "torque": -1e-4,           # * sum(actuator torque^2), energy proxy
     "action_rate": -0.01,      # * ||a_t - a_{t-1}||^2, smoothness
+    "contact_balance": -5.0,   # * sum over mirrored pairs of squared
+                               #   contact-duty difference (EMA): fights
+                               #   one-sided loading without forbidding the
+                               #   trot's phase offset (an instantaneous
+                               #   mirror penalty would)
 }
 
 FOOT_GEOM_NAMES = ("FR", "FL", "RR", "RL")
@@ -67,7 +85,15 @@ ABDUCTION_QPOS_IDX = np.array([7, 10, 13, 16])  # hip abduction joints in qpos
 class Go1WalkEnv(gym.Env):
     metadata = {"render_modes": ["rgb_array"], "render_fps": 50}
 
-    def __init__(self, render_mode: str | None = None, seed: int | None = None):
+    def __init__(
+        self,
+        render_mode: str | None = None,
+        seed: int | None = None,
+        obs_noise_scale: float = 0.0,
+        random_pushes: bool = False,
+    ):
+        self.obs_noise_scale = obs_noise_scale
+        self.random_pushes = random_pushes
         self.model = mujoco.MjModel.from_xml_path(str(SCENE_XML))
         self.data = mujoco.MjData(self.model)
         self.render_mode = render_mode
@@ -123,9 +149,12 @@ class Go1WalkEnv(gym.Env):
         gravity, lin_vel, ang_vel = self._body_frame()
         joint_pos = self.data.qpos[7:] - self._home_qpos[7:]
         joint_vel = self.data.qvel[6:]
-        return np.concatenate(
+        obs = np.concatenate(
             [gravity, lin_vel, ang_vel, joint_pos, joint_vel, self._prev_action]
         )
+        if self.obs_noise_scale > 0.0:
+            obs = obs + self._rng.normal(0.0, OBS_NOISE_SIGMA * self.obs_noise_scale)
+        return obs
 
     def _is_fallen(self) -> bool:
         gravity, _, _ = self._body_frame()
@@ -144,9 +173,8 @@ class Go1WalkEnv(gym.Env):
                     contacts[hit[0]] = True
         return contacts
 
-    def _air_time_reward(self) -> float:
+    def _air_time_reward(self, contacts: np.ndarray) -> float:
         """Accumulate swing time; score each swing when the foot touches down."""
-        contacts = self._foot_contacts()
         total = 0.0
         for i in range(4):
             if contacts[i]:
@@ -156,6 +184,14 @@ class Go1WalkEnv(gym.Env):
             else:
                 self._foot_air[i] += CTRL_DT
         return total
+
+    def _contact_balance_penalty(self, contacts: np.ndarray) -> float:
+        """Squared L/R contact-duty difference for FR/FL and RR/RL pairs."""
+        self._duty = (1 - DUTY_EMA_ALPHA) * self._duty + DUTY_EMA_ALPHA * contacts
+        return float(
+            (self._duty[0] - self._duty[1]) ** 2
+            + (self._duty[2] - self._duty[3]) ** 2
+        )
 
     # ------------------------------------------------------------- gym API
 
@@ -174,6 +210,8 @@ class Go1WalkEnv(gym.Env):
         self._push_force = np.zeros(3)
         self._push_steps_left = 0
         self._foot_air = np.zeros(4)
+        self._duty = np.full(4, 0.5)
+        self._next_push_step = int(self._rng.integers(*PUSH_INTERVAL_STEPS))
         return self._get_obs(), {}
 
     def step(self, action: np.ndarray):
@@ -181,6 +219,12 @@ class Go1WalkEnv(gym.Env):
         self.data.ctrl[:] = np.clip(
             self._home_ctrl + ACTION_SCALE * action, self._ctrl_lo, self._ctrl_hi
         )
+
+        if self.random_pushes and self._step_count == self._next_push_step:
+            angle = self._rng.uniform(0.0, 2.0 * np.pi)
+            mag = self._rng.uniform(*PUSH_FORCE_RANGE_N)
+            self.queue_push((mag * np.cos(angle), mag * np.sin(angle)), 0.2)
+            self._next_push_step += int(self._rng.integers(*PUSH_INTERVAL_STEPS))
 
         for _ in range(PHYSICS_STEPS_PER_CTRL):
             if self._push_steps_left > 0:
@@ -196,6 +240,7 @@ class Go1WalkEnv(gym.Env):
         gravity, lin_vel, ang_vel = self._body_frame()
         vx_world = self.data.qvel[0]
         torques = self.data.actuator_force
+        contacts = self._foot_contacts()
         components = {
             "forward_velocity": REWARD_WEIGHTS["forward_velocity"]
             * float(np.clip(vx_world, -1.0, 1.0)),
@@ -209,10 +254,12 @@ class Go1WalkEnv(gym.Env):
             "yaw_rate": REWARD_WEIGHTS["yaw_rate"] * float(ang_vel[2] ** 2),
             "abduction_posture": REWARD_WEIGHTS["abduction_posture"]
             * float(np.sum(self.data.qpos[ABDUCTION_QPOS_IDX] ** 2)),
-            "air_time": REWARD_WEIGHTS["air_time"] * self._air_time_reward(),
+            "air_time": REWARD_WEIGHTS["air_time"] * self._air_time_reward(contacts),
             "torque": REWARD_WEIGHTS["torque"] * float(np.sum(torques**2)),
             "action_rate": REWARD_WEIGHTS["action_rate"]
             * float(np.sum((action - self._prev_action) ** 2)),
+            "contact_balance": REWARD_WEIGHTS["contact_balance"]
+            * self._contact_balance_penalty(contacts),
         }
         reward = float(sum(components.values()))
         self._prev_action = action

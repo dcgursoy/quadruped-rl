@@ -26,7 +26,6 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-import gymnasium as gym
 import numpy as np
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
@@ -42,28 +41,6 @@ PUSH_DIRECTIONS = {
 PUSH_MAGNITUDES_N = [25, 50, 75, 100, 125, 150]
 PUSH_DURATION_S = 0.2
 RECOVERY_WINDOW_STEPS = 250  # 5 s at 50 Hz
-
-# Per-block observation noise sigmas (gravity, lin vel, ang vel, joint pos,
-# joint vel, prev action) -- roughly realistic IMU / joint-encoder noise.
-OBS_NOISE_SIGMA = np.concatenate([
-    np.full(3, 0.02),    # projected gravity
-    np.full(3, 0.05),    # lin vel, m/s
-    np.full(3, 0.10),    # ang vel, rad/s
-    np.full(12, 0.005),  # joint pos, rad
-    np.full(12, 0.75),   # joint vel, rad/s
-    np.full(12, 0.0),    # prev action (internal, not a sensor)
-])
-
-
-class NoisyObs(gym.ObservationWrapper):
-    def __init__(self, env, scale: float, seed: int = 0):
-        super().__init__(env)
-        self.scale = scale
-        self.rng = np.random.default_rng(seed)
-
-    def observation(self, obs):
-        return obs + self.rng.normal(0.0, OBS_NOISE_SIGMA * self.scale)
-
 
 def load(checkpoint: str, vecnormalize: str, env_fn):
     venv = DummyVecEnv([env_fn])
@@ -121,7 +98,7 @@ def run_push_sweep(model, venv, trials: int):
 
 def run_noise_eval(checkpoint, vecnormalize, scale: float, episodes: int):
     model, venv = load(checkpoint, vecnormalize,
-                       lambda: NoisyObs(Go1WalkEnv(), scale))
+                       lambda: Go1WalkEnv(obs_noise_scale=scale))
     falls, speeds = 0, []
     for ep in range(episodes):
         venv.seed(3000 + ep)
